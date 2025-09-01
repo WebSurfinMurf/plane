@@ -56,12 +56,13 @@ docker run -d \
   --label "traefik.http.routers.plane-api-local.entrypoints=web" \
   --label "traefik.http.routers.plane-api-local.service=plane-api-service" \
   --label "traefik.http.services.plane-api-service.loadbalancer.server.port=8000" \
-  makeplane/plane-backend:stable \
+  makeplane/plane-backend:v0.28.0 \
   sh -c "python manage.py migrate && gunicorn -w 2 -b 0.0.0.0:8000 --timeout 120 --log-level debug --access-logfile - --error-logfile - plane.wsgi:application"
 
-# Connect API to traefik and redis networks
+# Connect API to traefik, redis, and postgres networks (for Keycloak access)
 docker network connect traefik-proxy plane-api 2>/dev/null || echo "plane-api already connected to traefik-proxy"
 docker network connect redis-net plane-api 2>/dev/null || echo "plane-api already connected to redis-net"
+docker network connect postgres-net plane-api 2>/dev/null || echo "plane-api already connected to postgres-net"
 
 # Deploy Plane Worker
 echo -e "\n${YELLOW}Deploying Plane Worker...${NC}"
@@ -72,7 +73,7 @@ docker run -d \
   --network plane-internal \
   -v plane-uploads:/code/uploads \
   --add-host="linuxserver.lan:host-gateway" \
-  makeplane/plane-backend:stable \
+  makeplane/plane-backend:v0.28.0 \
   celery -A plane worker -l info --concurrency=4
 
 # Connect Worker to redis network
@@ -86,7 +87,7 @@ docker run -d \
   --env-file "$SECRETS_FILE" \
   --network plane-internal \
   --add-host="linuxserver.lan:host-gateway" \
-  makeplane/plane-backend:stable \
+  makeplane/plane-backend:v0.28.0 \
   celery -A plane beat -l info
 
 # Connect Beat to redis network
@@ -99,14 +100,14 @@ docker run -d \
   --restart unless-stopped \
   --network plane-internal \
   --network-alias plane-web \
-  -e NEXT_PUBLIC_ENABLE_OAUTH=0 \
+  -e NEXT_PUBLIC_ENABLE_OAUTH=1 \
   -e NEXT_PUBLIC_DEPLOY_URL=https://plane.ai-servicers.com \
   -e NEXT_PUBLIC_API_BASE_URL=https://plane.ai-servicers.com \
   -e NEXT_PUBLIC_LIVE_BASE_URL=https://plane.ai-servicers.com \
   -e NEXT_PUBLIC_GOD_MODE=1 \
   -e HOSTNAME=0.0.0.0 \
   -e NODE_ENV=production \
-  makeplane/plane-frontend:stable
+  makeplane/plane-frontend:v0.28.0
 
 # Create nginx configuration
 echo -e "\n${YELLOW}Creating nginx configuration...${NC}"

@@ -43,7 +43,8 @@
 **FACT**: Admin user created with email `mmurphyemail@gmail.com`
 **FACT**: Password is `Admin123!`
 **FACT**: Local authentication is enabled (`ENABLE_EMAIL_PASSWORD=1`)
-**FACT**: Keycloak/SSO is NOT configured (future enhancement)
+**FACT**: Keycloak OIDC must be configured via God Mode UI, NOT environment variables
+**FACT**: God Mode accessible at https://plane.ai-servicers.com/god-mode/
 **VERIFIED**: User successfully logged in via https://plane.ai-servicers.com/
 
 ### 6. URL Configuration for External-Only Access
@@ -326,15 +327,40 @@ plane-beat (Scheduler) → Redis
 - `/home/administrator/projects/plane/README.md` - Basic project readme
 - `/tmp/plane-nginx.conf` - Nginx proxy configuration (auto-generated during deployment)
 
+## Keycloak OIDC Configuration
+
+### Setup Process
+1. **Enable OAuth in deployment**: Set `NEXT_PUBLIC_ENABLE_OAUTH=1` in deploy.sh
+2. **Access God Mode**: https://plane.ai-servicers.com/god-mode/authentication/oidc
+3. **Configure OIDC Settings**:
+   - Client ID: `plane`
+   - Client Secret: `IgeDg6EoY0rPYktGgVCpu00iokbxtiIX`
+   - Token URL: `https://keycloak.ai-servicers.com/realms/master/protocol/openid-connect/token`
+   - User Info URL: `https://keycloak.ai-servicers.com/realms/master/protocol/openid-connect/userinfo`
+   - Authorize URL: `https://keycloak.ai-servicers.com/realms/master/protocol/openid-connect/auth`
+   - Name: `Keycloak` (displays on login button)
+
+### Keycloak Client Configuration
+In Keycloak admin, configure the `plane` client with:
+- Valid Redirect URIs: `https://plane.ai-servicers.com/*`
+- Web Origins: `https://plane.ai-servicers.com`
+- Client authentication: OFF (public client)
+
+### Important Notes
+- **DO NOT** configure OIDC via environment variables - Plane ignores them
+- OIDC configuration is stored in Plane's database via God Mode
+- Network connectivity to Keycloak handled internally by Plane
+
 ## Notes
 
 - Plane is actively developed with frequent updates
 - Community Edition is fully featured including SSO
 - Can be scaled horizontally by adding more workers
 - Supports multiple workspaces in a single installation
-- **Successfully Deployed**: 2025-08-31
-- **Using**: stable image versions (not latest) for better stability
+- **Successfully Deployed**: 2025-09-01
+- **Using**: stable image versions for better stability
 - **MinIO**: Connected to central MinIO service with dedicated service account
+- **Keycloak**: Configured via God Mode interface
 
 ## Lessons Learned During Deployment
 
