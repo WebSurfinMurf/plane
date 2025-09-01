@@ -31,8 +31,8 @@ docker network create plane-internal 2>/dev/null || echo "Network plane-internal
 
 # Stop existing containers
 echo -e "\n${YELLOW}Stopping existing Plane containers...${NC}"
-docker stop plane-api plane-web plane-worker plane-beat 2>/dev/null || true
-docker rm plane-api plane-web plane-worker plane-beat 2>/dev/null || true
+docker stop plane-api plane-web plane-proxy plane-worker plane-beat 2>/dev/null || true
+docker rm plane-api plane-web plane-proxy plane-worker plane-beat 2>/dev/null || true
 
 # Deploy Plane API
 echo -e "\n${YELLOW}Deploying Plane API...${NC}"
@@ -92,22 +92,78 @@ docker run -d \
 # Connect Beat to redis network
 docker network connect redis-net plane-beat 2>/dev/null || echo "plane-beat already connected to redis-net"
 
-# Deploy Plane Web Frontend (using deploy image)
+# Deploy Plane Web Frontend (internal only, no external port)
 echo -e "\n${YELLOW}Deploying Plane Web Frontend...${NC}"
 docker run -d \
   --name plane-web \
   --restart unless-stopped \
-  --network traefik-proxy \
+  --network plane-internal \
   --network-alias plane-web \
-  -p 3001:3000 \
   -e NEXT_PUBLIC_ENABLE_OAUTH=0 \
-  -e NEXT_PUBLIC_DEPLOY_URL=http://linuxserver.lan:3001 \
-  -e NEXT_PUBLIC_API_BASE_URL=http://linuxserver.lan:8001 \
-  -e NEXT_PUBLIC_LIVE_BASE_URL=http://plane-api:8000 \
+  -e NEXT_PUBLIC_DEPLOY_URL=https://plane.ai-servicers.com \
+  -e NEXT_PUBLIC_API_BASE_URL=https://plane.ai-servicers.com \
+  -e NEXT_PUBLIC_LIVE_BASE_URL=https://plane.ai-servicers.com \
   -e NEXT_PUBLIC_GOD_MODE=1 \
   -e HOSTNAME=0.0.0.0 \
-  -e NODE_ENV=development \
-  -e DEBUG=true \
+  -e NODE_ENV=production \
+  makeplane/plane-frontend:stable
+
+# Create nginx configuration
+echo -e "\n${YELLOW}Creating nginx configuration...${NC}"
+cat > /tmp/plane-nginx.conf << 'EOF'
+server {
+    listen 80;
+    server_name _;
+    
+    client_max_body_size 100M;
+
+    # Frontend
+    location / {
+        proxy_pass http://plane-web:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # API endpoints
+    location /api/ {
+        proxy_pass http://plane-api:8000/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Auth endpoints
+    location /auth/ {
+        proxy_pass http://plane-api:8000/auth/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Spaces endpoints  
+    location /spaces/ {
+        proxy_pass http://plane-api:8000/spaces/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+
+# Deploy nginx proxy
+echo -e "\n${YELLOW}Deploying nginx proxy...${NC}"
+docker run -d \
+  --name plane-proxy \
+  --restart unless-stopped \
+  --network traefik-proxy \
+  --network-alias plane-proxy \
+  -p 3001:80 \
+  -v /tmp/plane-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
   --label "traefik.enable=true" \
   --label "traefik.docker.network=traefik-proxy" \
   --label "traefik.http.routers.plane.rule=Host(\`plane.ai-servicers.com\`)" \
@@ -118,11 +174,11 @@ docker run -d \
   --label "traefik.http.routers.plane-local.rule=Host(\`plane.linuxserver.lan\`)" \
   --label "traefik.http.routers.plane-local.entrypoints=web" \
   --label "traefik.http.routers.plane-local.service=plane-service" \
-  --label "traefik.http.services.plane-service.loadbalancer.server.port=3000" \
-  makeplane/plane-frontend:stable
+  --label "traefik.http.services.plane-service.loadbalancer.server.port=80" \
+  nginx:alpine
 
-# Connect Web to internal network for API access
-docker network connect plane-internal plane-web 2>/dev/null || echo "plane-web already connected to plane-internal"
+# Connect proxy to internal network for backend access
+docker network connect plane-internal plane-proxy 2>/dev/null || echo "plane-proxy already connected to plane-internal"
 
 # Wait for services to start
 echo -e "\n${YELLOW}Waiting for services to initialize...${NC}"
@@ -132,6 +188,7 @@ sleep 30
 echo -e "\n${YELLOW}Checking service status...${NC}"
 echo "API:    $(docker ps --filter name=plane-api --format 'table {{.Status}}' | tail -n 1)"
 echo "Web:    $(docker ps --filter name=plane-web --format 'table {{.Status}}' | tail -n 1)"
+echo "Proxy:  $(docker ps --filter name=plane-proxy --format 'table {{.Status}}' | tail -n 1)"
 echo "Worker: $(docker ps --filter name=plane-worker --format 'table {{.Status}}' | tail -n 1)"
 echo "Beat:   $(docker ps --filter name=plane-beat --format 'table {{.Status}}' | tail -n 1)"
 

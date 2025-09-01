@@ -17,9 +17,9 @@ echo -e "${BLUE}Plane Admin User Creation${NC}"
 echo -e "${BLUE}========================================${NC}"
 
 # Check if backend container is running
-if ! docker ps | grep -q plane-backend; then
-    echo -e "${RED}Error: Backend container is not running${NC}"
-    echo -e "${YELLOW}Please run ./deploy.sh first${NC}"
+if ! docker ps | grep -q plane-api; then
+    echo -e "${RED}Error: API container is not running${NC}"
+    echo -e "${YELLOW}Please run ./deploy-direct.sh first${NC}"
     exit 1
 fi
 
@@ -49,7 +49,7 @@ fi
 # Create the admin user using Django management command
 echo -e "\n${YELLOW}Creating admin user...${NC}"
 
-docker exec plane-backend python manage.py shell <<EOF
+docker exec plane-api python manage.py shell <<EOF
 from django.contrib.auth import get_user_model
 from plane.db.models import User, Workspace, WorkspaceMember
 
