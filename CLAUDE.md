@@ -314,23 +314,17 @@ plane-beat (Scheduler) → Redis
 - 8001 → 8000 (API direct access)
 - No external port for plane-web (accessed via proxy only)
 
-## Files Created
+## Project Files
 
 ### Active Scripts
-- `/home/administrator/projects/plane/deploy-direct.sh` - ✅ **PRODUCTION** deployment script with external-only configuration
+- `/home/administrator/projects/plane/deploy.sh` - ✅ **PRODUCTION** deployment script
 - `/home/administrator/projects/plane/create-admin.sh` - ✅ Admin user creation script
 
 ### Configuration
-- `/home/administrator/projects/admin/secrets/plane.env` - Environment variables (external-only URLs)
+- `/home/administrator/projects/admin/secrets/plane.env` - Environment variables (NO hardcoded secrets in scripts)
 - `/home/administrator/projects/plane/CLAUDE.md` - This comprehensive documentation
+- `/home/administrator/projects/plane/README.md` - Basic project readme
 - `/tmp/plane-nginx.conf` - Nginx proxy configuration (auto-generated during deployment)
-
-### Deprecated Files
-- `/home/administrator/projects/plane/deploy.sh` - Original script (obsolete)
-- `/home/administrator/projects/plane/deploy-compose.sh` - Docker Compose version (not used)
-- `/home/administrator/projects/plane/docker-compose.yml` - Docker Compose config (not used)
-- `/home/administrator/projects/plane/nginx.conf` - Old nginx config (replaced by inline)
-- `/home/administrator/projects/plane/workernotes.md` - Troubleshooting notes (incorporated here)
 
 ## Notes
 
@@ -430,7 +424,7 @@ plane-beat (Scheduler) → Redis
 ```bash
 # Deploy/redeploy Plane (ALWAYS use the script!)
 cd /home/administrator/projects/plane
-./deploy-direct.sh
+./deploy.sh
 
 # Check status
 docker ps | grep plane
@@ -454,7 +448,7 @@ docker exec plane-worker env | grep REDIS
 ## Working Configuration Summary
 
 **Key Requirements for Successful Deployment**:
-1. Use `deploy-direct.sh` script - NEVER run docker commands directly
+1. Use `deploy.sh` script - NEVER run docker commands directly
 2. All `NEXT_PUBLIC_*` URLs must point to `https://plane.ai-servicers.com`
 3. Redis hostname must be `redis` (container name), not `linuxserver.lan`
 4. CSRF_TRUSTED_ORIGINS must include `https://plane.ai-servicers.com`

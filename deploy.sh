@@ -1,30 +1,12 @@
 #!/bin/bash
 
-# Plane Deployment Script
-# Deploys Plane project management platform with Traefik integration
+# Plane Direct Docker Deployment Script
+# Deploys Plane without requiring docker-compose
 
 set -e
 
 # Configuration
-PROJECT_NAME="plane"
-NETWORK="traefik-proxy"
-DOMAIN="plane.ai-servicers.com"
 SECRETS_FILE="/home/administrator/projects/admin/secrets/plane.env"
-DATA_DIR="/home/administrator/projects/data/plane"
-
-# Container names
-FRONTEND_CONTAINER="plane-frontend"
-BACKEND_CONTAINER="plane-backend"
-WORKER_CONTAINER="plane-worker"
-BEAT_CONTAINER="plane-beat-worker"
-MINIO_CONTAINER="plane-minio"
-
-# Images (using latest stable versions)
-FRONTEND_IMAGE="makeplane/plane-frontend:latest"
-BACKEND_IMAGE="makeplane/plane-backend:latest"
-WORKER_IMAGE="makeplane/plane-backend:latest"
-BEAT_IMAGE="makeplane/plane-backend:latest"
-MINIO_IMAGE="minio/minio:latest"
 
 # Colors for output
 RED='\033[0;31m'
@@ -34,174 +16,195 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Plane Deployment Script${NC}"
+echo -e "${BLUE}Plane Direct Docker Deployment${NC}"
 echo -e "${BLUE}========================================${NC}"
 
 # Check if secrets file exists
 if [ ! -f "$SECRETS_FILE" ]; then
     echo -e "${RED}Error: Secrets file not found at $SECRETS_FILE${NC}"
-    echo -e "${YELLOW}Please ensure plane.env exists in the secrets directory${NC}"
     exit 1
 fi
 
-# Create data directories
-echo -e "\n${YELLOW}Creating data directories...${NC}"
-mkdir -p $DATA_DIR/{uploads,logs,minio-data}
-chmod -R 755 $DATA_DIR
+# Create plane-internal network if it doesn't exist
+echo -e "\n${YELLOW}Creating internal network...${NC}"
+docker network create plane-internal 2>/dev/null || echo "Network plane-internal already exists"
 
-# Function to stop and remove container if exists
-remove_container() {
-    local container_name=$1
-    if docker ps -a | grep -q $container_name; then
-        echo -e "${YELLOW}Removing existing container: $container_name${NC}"
-        docker stop $container_name 2>/dev/null || true
-        docker rm $container_name 2>/dev/null || true
-    fi
-}
+# Stop existing containers
+echo -e "\n${YELLOW}Stopping existing Plane containers...${NC}"
+docker stop plane-api plane-web plane-proxy plane-worker plane-beat 2>/dev/null || true
+docker rm plane-api plane-web plane-proxy plane-worker plane-beat 2>/dev/null || true
 
-# Stop and remove existing containers
-echo -e "\n${YELLOW}Cleaning up existing containers...${NC}"
-remove_container $FRONTEND_CONTAINER
-remove_container $BACKEND_CONTAINER
-remove_container $WORKER_CONTAINER
-remove_container $BEAT_CONTAINER
-remove_container $MINIO_CONTAINER
-
-# Pull latest images
-echo -e "\n${YELLOW}Pulling latest images...${NC}"
-docker pull $FRONTEND_IMAGE
-docker pull $BACKEND_IMAGE
-docker pull $MINIO_IMAGE
-
-# Deploy MinIO for object storage
-echo -e "\n${YELLOW}Deploying MinIO storage...${NC}"
+# Deploy Plane API
+echo -e "\n${YELLOW}Deploying Plane API...${NC}"
 docker run -d \
-  --name $MINIO_CONTAINER \
-  --network $NETWORK \
-  --env-file $SECRETS_FILE \
-  -v $DATA_DIR/minio-data:/data \
+  --name plane-api \
   --restart unless-stopped \
-  $MINIO_IMAGE server /data --console-address ":9001"
+  --env-file "$SECRETS_FILE" \
+  --network plane-internal \
+  --network-alias plane-api \
+  -p 8001:8000 \
+  -v plane-uploads:/code/uploads \
+  --add-host="linuxserver.lan:host-gateway" \
+  --label "traefik.enable=true" \
+  --label "traefik.docker.network=traefik-proxy" \
+  --label "traefik.http.routers.plane-api.rule=Host(\`plane.ai-servicers.com\`) && PathPrefix(\`/api\`)" \
+  --label "traefik.http.routers.plane-api.entrypoints=websecure" \
+  --label "traefik.http.routers.plane-api.tls=true" \
+  --label "traefik.http.routers.plane-api.tls.certresolver=letsencrypt" \
+  --label "traefik.http.routers.plane-api.service=plane-api-service" \
+  --label "traefik.http.routers.plane-api-local.rule=Host(\`plane.linuxserver.lan\`) && PathPrefix(\`/api\`)" \
+  --label "traefik.http.routers.plane-api-local.entrypoints=web" \
+  --label "traefik.http.routers.plane-api-local.service=plane-api-service" \
+  --label "traefik.http.services.plane-api-service.loadbalancer.server.port=8000" \
+  makeplane/plane-backend:stable \
+  sh -c "python manage.py migrate && gunicorn -w 2 -b 0.0.0.0:8000 --timeout 120 --log-level debug --access-logfile - --error-logfile - plane.wsgi:application"
 
-# Wait for MinIO to start
-echo -e "${YELLOW}Waiting for MinIO to start...${NC}"
-sleep 10
+# Connect API to traefik and redis networks
+docker network connect traefik-proxy plane-api 2>/dev/null || echo "plane-api already connected to traefik-proxy"
+docker network connect redis-net plane-api 2>/dev/null || echo "plane-api already connected to redis-net"
 
-# Deploy Backend API
-echo -e "\n${YELLOW}Deploying Plane Backend API...${NC}"
-docker run -d \
-  --name $BACKEND_CONTAINER \
-  --network $NETWORK \
-  --env-file $SECRETS_FILE \
-  -e DJANGO_SETTINGS_MODULE=plane.settings.production \
-  -v $DATA_DIR/uploads:/code/uploads \
-  -v $DATA_DIR/logs:/code/logs \
-  --add-host linuxserver.lan:172.22.0.1 \
-  --restart unless-stopped \
-  $BACKEND_IMAGE python manage.py runserver 0.0.0.0:8000
-
-# Deploy Worker for background jobs
+# Deploy Plane Worker
 echo -e "\n${YELLOW}Deploying Plane Worker...${NC}"
 docker run -d \
-  --name $WORKER_CONTAINER \
-  --network $NETWORK \
-  --env-file $SECRETS_FILE \
-  -e DJANGO_SETTINGS_MODULE=plane.settings.production \
-  -v $DATA_DIR/uploads:/code/uploads \
-  -v $DATA_DIR/logs:/code/logs \
-  --add-host linuxserver.lan:172.22.0.1 \
+  --name plane-worker \
   --restart unless-stopped \
-  $WORKER_IMAGE celery -A plane worker -l info
+  --env-file "$SECRETS_FILE" \
+  --network plane-internal \
+  -v plane-uploads:/code/uploads \
+  --add-host="linuxserver.lan:host-gateway" \
+  makeplane/plane-backend:stable \
+  celery -A plane worker -l info --concurrency=4
 
-# Deploy Beat scheduler for cron jobs
+# Connect Worker to redis network
+docker network connect redis-net plane-worker 2>/dev/null || echo "plane-worker already connected to redis-net"
+
+# Deploy Plane Beat Scheduler
 echo -e "\n${YELLOW}Deploying Plane Beat Scheduler...${NC}"
 docker run -d \
-  --name $BEAT_CONTAINER \
-  --network $NETWORK \
-  --env-file $SECRETS_FILE \
-  -e DJANGO_SETTINGS_MODULE=plane.settings.production \
-  --add-host linuxserver.lan:172.22.0.1 \
+  --name plane-beat \
   --restart unless-stopped \
-  $BEAT_IMAGE celery -A plane beat -l info
+  --env-file "$SECRETS_FILE" \
+  --network plane-internal \
+  --add-host="linuxserver.lan:host-gateway" \
+  makeplane/plane-backend:stable \
+  celery -A plane beat -l info
 
-# Deploy Frontend with Traefik labels
-echo -e "\n${YELLOW}Deploying Plane Frontend...${NC}"
+# Connect Beat to redis network
+docker network connect redis-net plane-beat 2>/dev/null || echo "plane-beat already connected to redis-net"
+
+# Deploy Plane Web Frontend (internal only, no external port)
+echo -e "\n${YELLOW}Deploying Plane Web Frontend...${NC}"
 docker run -d \
-  --name $FRONTEND_CONTAINER \
-  --network $NETWORK \
-  --env-file $SECRETS_FILE \
-  -e NEXT_PUBLIC_API_BASE_URL=https://$DOMAIN \
-  --label "traefik.enable=true" \
-  --label "traefik.docker.network=$NETWORK" \
-  --label "traefik.http.routers.$PROJECT_NAME.rule=Host(\`$DOMAIN\`)" \
-  --label "traefik.http.routers.$PROJECT_NAME.entrypoints=websecure" \
-  --label "traefik.http.routers.$PROJECT_NAME.tls=true" \
-  --label "traefik.http.routers.$PROJECT_NAME.tls.certresolver=letsencrypt" \
-  --label "traefik.http.services.$PROJECT_NAME.loadbalancer.server.port=3000" \
-  --label "traefik.http.routers.$PROJECT_NAME-api.rule=Host(\`$DOMAIN\`) && PathPrefix(\`/api\`)" \
-  --label "traefik.http.routers.$PROJECT_NAME-api.entrypoints=websecure" \
-  --label "traefik.http.routers.$PROJECT_NAME-api.tls=true" \
-  --label "traefik.http.routers.$PROJECT_NAME-api.service=$PROJECT_NAME-api" \
-  --label "traefik.http.services.$PROJECT_NAME-api.loadbalancer.server.url=http://$BACKEND_CONTAINER:8000" \
-  --label "traefik.http.routers.$PROJECT_NAME.middlewares=$PROJECT_NAME-headers" \
-  --label "traefik.http.middlewares.$PROJECT_NAME-headers.headers.stsSeconds=31536000" \
-  --label "traefik.http.middlewares.$PROJECT_NAME-headers.headers.stsIncludeSubdomains=true" \
-  --label "traefik.http.middlewares.$PROJECT_NAME-headers.headers.stsPreload=true" \
+  --name plane-web \
   --restart unless-stopped \
-  $FRONTEND_IMAGE
+  --network plane-internal \
+  --network-alias plane-web \
+  -e NEXT_PUBLIC_ENABLE_OAUTH=0 \
+  -e NEXT_PUBLIC_DEPLOY_URL=https://plane.ai-servicers.com \
+  -e NEXT_PUBLIC_API_BASE_URL=https://plane.ai-servicers.com \
+  -e NEXT_PUBLIC_LIVE_BASE_URL=https://plane.ai-servicers.com \
+  -e NEXT_PUBLIC_GOD_MODE=1 \
+  -e HOSTNAME=0.0.0.0 \
+  -e NODE_ENV=production \
+  makeplane/plane-frontend:stable
+
+# Create nginx configuration
+echo -e "\n${YELLOW}Creating nginx configuration...${NC}"
+cat > /tmp/plane-nginx.conf << 'EOF'
+server {
+    listen 80;
+    server_name _;
+    
+    client_max_body_size 100M;
+
+    # Frontend
+    location / {
+        proxy_pass http://plane-web:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # API endpoints
+    location /api/ {
+        proxy_pass http://plane-api:8000/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Auth endpoints
+    location /auth/ {
+        proxy_pass http://plane-api:8000/auth/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Spaces endpoints  
+    location /spaces/ {
+        proxy_pass http://plane-api:8000/spaces/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+
+# Deploy nginx proxy
+echo -e "\n${YELLOW}Deploying nginx proxy...${NC}"
+docker run -d \
+  --name plane-proxy \
+  --restart unless-stopped \
+  --network traefik-proxy \
+  --network-alias plane-proxy \
+  -p 3001:80 \
+  -v /tmp/plane-nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+  --label "traefik.enable=true" \
+  --label "traefik.docker.network=traefik-proxy" \
+  --label "traefik.http.routers.plane.rule=Host(\`plane.ai-servicers.com\`)" \
+  --label "traefik.http.routers.plane.entrypoints=websecure" \
+  --label "traefik.http.routers.plane.tls=true" \
+  --label "traefik.http.routers.plane.tls.certresolver=letsencrypt" \
+  --label "traefik.http.routers.plane.service=plane-service" \
+  --label "traefik.http.routers.plane-local.rule=Host(\`plane.linuxserver.lan\`)" \
+  --label "traefik.http.routers.plane-local.entrypoints=web" \
+  --label "traefik.http.routers.plane-local.service=plane-service" \
+  --label "traefik.http.services.plane-service.loadbalancer.server.port=80" \
+  nginx:alpine
+
+# Connect proxy to internal network for backend access
+docker network connect plane-internal plane-proxy 2>/dev/null || echo "plane-proxy already connected to plane-internal"
 
 # Wait for services to start
-echo -e "\n${YELLOW}Waiting for services to start...${NC}"
-sleep 20
+echo -e "\n${YELLOW}Waiting for services to initialize...${NC}"
+sleep 30
 
-# Check container status
-echo -e "\n${YELLOW}Checking container status...${NC}"
-containers=($FRONTEND_CONTAINER $BACKEND_CONTAINER $WORKER_CONTAINER $BEAT_CONTAINER $MINIO_CONTAINER)
-all_running=true
+# Check service status
+echo -e "\n${YELLOW}Checking service status...${NC}"
+echo "API:    $(docker ps --filter name=plane-api --format 'table {{.Status}}' | tail -n 1)"
+echo "Web:    $(docker ps --filter name=plane-web --format 'table {{.Status}}' | tail -n 1)"
+echo "Proxy:  $(docker ps --filter name=plane-proxy --format 'table {{.Status}}' | tail -n 1)"
+echo "Worker: $(docker ps --filter name=plane-worker --format 'table {{.Status}}' | tail -n 1)"
+echo "Beat:   $(docker ps --filter name=plane-beat --format 'table {{.Status}}' | tail -n 1)"
 
-for container in "${containers[@]}"; do
-    if docker ps | grep -q $container; then
-        echo -e "${GREEN}✓ $container is running${NC}"
-    else
-        echo -e "${RED}✗ $container failed to start${NC}"
-        all_running=false
-    fi
-done
-
-if [ "$all_running" = false ]; then
-    echo -e "\n${RED}Some containers failed to start. Checking logs...${NC}"
-    for container in "${containers[@]}"; do
-        if ! docker ps | grep -q $container; then
-            echo -e "\n${YELLOW}Logs for $container:${NC}"
-            docker logs $container --tail 20 2>&1 || echo "Container not found"
-        fi
-    done
-    exit 1
-fi
-
-# Display status
+# Display completion message
 echo -e "\n${GREEN}========================================${NC}"
 echo -e "${GREEN}Deployment Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "Container Status:"
-docker ps --filter name=plane --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+echo -e "Access Plane at: ${YELLOW}https://plane.ai-servicers.com${NC}"
 echo ""
-echo -e "Access Plane at: ${YELLOW}https://$DOMAIN${NC}"
+echo -e "${YELLOW}Check logs:${NC}"
+echo "  docker logs plane-api --tail 50"
+echo "  docker logs plane-web --tail 50"
+echo "  docker logs plane-worker --tail 50"
 echo ""
 echo -e "${YELLOW}Next Steps:${NC}"
-echo "1. Run the setup script to initialize the database:"
-echo "   ${BLUE}./setup-database.sh${NC}"
-echo ""
-echo "2. Create your first workspace and admin user"
-echo ""
-echo -e "${YELLOW}Useful Commands:${NC}"
-echo "  docker logs -f $BACKEND_CONTAINER     # View backend logs"
-echo "  docker logs -f $FRONTEND_CONTAINER    # View frontend logs"
-echo "  docker logs -f $WORKER_CONTAINER      # View worker logs"
-echo "  docker restart plane-*                # Restart all Plane containers"
-echo ""
-echo -e "${YELLOW}MinIO Console:${NC}"
-echo "  URL: http://$(hostname -I | awk '{print $1}'):9001"
-echo "  Username: planeadmin"
-echo "  Password: Check plane.env file"
+echo "1. Wait for migrations to complete (check API logs)"
+echo "2. Create your first admin user:"
+echo "   ${BLUE}./create-admin.sh${NC}"
